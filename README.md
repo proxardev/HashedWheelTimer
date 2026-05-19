@@ -1,6 +1,12 @@
 # High Performance Timer for .NET
 HashedWheelTimer implemented in C# inspired by io.netty.util.HashedWheelTimer
 
+## Fork Note
+This project is based on https://github.com/wangjia184/HashedWheelTimer.
+
+**Key Modification**: The main modification is replacing the Task.Run execution model with direct invocation of TimerTask.Run for expired timers. 
+This allow control that all timeout callbacks are executed sequentially on a single thread.
+
 ## What is Hashed Wheel Timer?
 
 It is a timer based on George Varghese and Tony Lauck's paper, [Hashed and Hierarchical Timing Wheels: data structures to efficiently implement a timer facility](http://cseweb.ucsd.edu/users/varghese/PAPERS/twheel.ps.Z). 
