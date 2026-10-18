@@ -1,6 +1,5 @@
-﻿using System;
-
-using HWT;
+﻿using HWT;
+using System;
 namespace HashWheelTimerApp
 {
 
@@ -13,10 +12,16 @@ namespace HashWheelTimerApp
         /// </summary>
         class IntervalTimerTask : TimerTask
         {
-            public void Run(Timeout timeout)
+            private HashedWheelTimer timer;
+            public IntervalTimerTask(HashedWheelTimer timer)
+            {
+                this.timer = timer;
+            }
+
+            public void Run(long id)
             {
                 Console.WriteLine($"IntervalTimerTask is fired at {DateTime.UtcNow.Ticks / 10000000L}");
-                timeout.Timer.NewTimeout(this, TimeSpan.FromSeconds(2));
+                timer.NewTimeout(this, TimeSpan.FromSeconds(2));
             }
         }
 
@@ -31,7 +36,7 @@ namespace HashWheelTimerApp
                 _userData = data;
             }
 
-            public void Run(Timeout timeout)
+            public void Run(long id)
             {
                 Console.WriteLine($"{_userData} is fired at {DateTime.UtcNow.Ticks / 10000000L}");
             }
@@ -42,24 +47,24 @@ namespace HashWheelTimerApp
         {
             Console.WriteLine($"{DateTime.UtcNow.Ticks / 10000000L} : Started");
 
-            HashedWheelTimer timer = new HashedWheelTimer( tickDuration: TimeSpan.FromMilliseconds(100)
+            HashedWheelTimer timer = new HashedWheelTimer(tickDuration: TimeSpan.FromMilliseconds(100)
                 , ticksPerWheel: 100000
                 , maxPendingTimeouts: 0);
 
             timer.NewTimeout(new OneTimeTask("A"), TimeSpan.FromSeconds(5));
             timer.NewTimeout(new OneTimeTask("B"), TimeSpan.FromSeconds(4));
-            var timeout = timer.NewTimeout(new OneTimeTask("C"), TimeSpan.FromSeconds(3));
+            var timerId = timer.NewTimeout(new OneTimeTask("C"), TimeSpan.FromSeconds(3));
             timer.NewTimeout(new OneTimeTask("D"), TimeSpan.FromSeconds(2));
             timer.NewTimeout(new OneTimeTask("E"), TimeSpan.FromSeconds(1));
 
-            timeout.Cancel();
+            timer.TryCancel(timerId, null);
 
-            timer.NewTimeout(new IntervalTimerTask(), TimeSpan.FromSeconds(5));
+            timer.NewTimeout(new IntervalTimerTask(timer), TimeSpan.FromSeconds(5));
 
 
             System.Threading.Thread.Sleep(7000);
             TestDelay(timer);
-            
+
             Console.ReadKey();
             timer.Stop();
             Console.WriteLine($"{DateTime.UtcNow.Ticks / 10000000L} : Stopped");
@@ -77,5 +82,5 @@ namespace HashWheelTimerApp
 
     }
 
-    
+
 }
