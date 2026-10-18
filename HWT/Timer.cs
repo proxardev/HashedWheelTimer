@@ -23,5 +23,7 @@ namespace HWT
         ISet<long> Stop();
 
         void TryCancel(long id, Action<long, bool> cancelResultInvoke);
+
+        void TryCancel(long id, TimerTask timerTask, Action<long, TimerTask, bool> cancelResultInvoke);
     }
 }

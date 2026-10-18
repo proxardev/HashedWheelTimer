@@ -53,6 +53,7 @@ namespace HWT
         internal readonly Dictionary<long, HashedWheelTimeout> _timeoutMaps = new Dictionary<long, HashedWheelTimeout>();
         internal readonly ConcurrentQueue<HashedWheelTimeout> _cancelledTimeouts = new ConcurrentQueue<HashedWheelTimeout>();
         internal readonly ConcurrentQueue<(long, Action<long, bool>)> _cancelledIds = new ConcurrentQueue<(long, Action<long, bool>)>();
+        internal readonly ConcurrentQueue<(long, TimerTask, Action<long, TimerTask, bool>)> _cancelledIds2 = new ConcurrentQueue<(long, TimerTask, Action<long, TimerTask, bool>)>();
         private readonly HashSet<long> CheckCancelledIds = new HashSet<long>();
         private readonly long _maxPendingTimeouts;
         private readonly Thread _workerThread;
@@ -439,6 +440,16 @@ namespace HWT
                 this.CancelTimer(id, cancelResultInvoke);
                 this.CheckCancelledIds.Add(id);
             }
+            for (; ; )
+            {
+                if (!_cancelledIds2.TryDequeue(out var data))
+                {
+                    break;
+                }
+                var (id, timerTask, cancelResultInvoke) = data;
+                this.CancelTimer(id, timerTask, cancelResultInvoke);
+                this.CheckCancelledIds.Add(id);
+            }
         }
 
         private void CancelTimer(long id, Action<long, bool> cancelResultInvoke)
@@ -452,5 +463,22 @@ namespace HWT
             cancelResultInvoke?.Invoke(id, succ);
         }
 
+
+        public void TryCancel(long id, TimerTask timerTask, Action<long, TimerTask, bool> cancelResultInvoke)
+        {
+            this._cancelledIds2.Enqueue((id, timerTask, cancelResultInvoke));
+        }
+
+        private void CancelTimer(long id, TimerTask timerTask, Action<long, TimerTask, bool> cancelResultInvoke)
+        {
+            var succ = false;
+            if (this._timeoutMaps.TryGetValue(id, out var timeout))
+            {
+                this._timeoutMaps.Remove(id);
+                succ = timeout.Cancel();
+            }
+            cancelResultInvoke?.Invoke(id, timerTask, succ);
+        }
     }
+
 }
