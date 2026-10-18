@@ -14,7 +14,7 @@ The main modification is replacing the Task.Run execution model with direct invo
 This allow control that all timeout callbacks are executed sequentially on a single thread.
 	</Description>
     <RootNamespace>HWT</RootNamespace>
-    <Version>1.0.1</Version>
+    <Version>1.0.2</Version>
 	<PublishRepositoryUrl>true</PublishRepositoryUrl>
 	<PackageProjectUrl>https://github.com/proxardev/HashedWheelTimer</PackageProjectUrl>
   </PropertyGroup>
