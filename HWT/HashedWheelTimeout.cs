@@ -1,36 +1,48 @@
-﻿using System.Threading;
+﻿using Microsoft.Extensions.ObjectPool;
+using System.Threading;
 
 namespace HWT
 {
-    internal sealed class HashedWheelTimeout : Timeout
+    internal sealed class HashedWheelTimeout : Timeout, IResettable
     {
         internal const int ST_INIT = 0;
         internal const int ST_CANCELLED = 1;
         internal const int ST_EXPIRED = 2;
 
         private volatile int _state = ST_INIT;
-        internal int State { get { return _state; } }
 
-        internal readonly HashedWheelTimer _timer;
-        private readonly TimerTask _task;
-        internal readonly long _deadline;
+        internal HashedWheelTimer _timer { get; private set; }
+        private TimerTask _task { get; set; }
+        internal long _deadline { get; private set; }
 
         // remainingRounds will be calculated and set by Worker.transferTimeoutsToBuckets() before the
         // HashedWheelTimeout will be added to the correct HashedWheelBucket.
         internal long _remainingRounds;
 
-        internal HashedWheelTimeout _next;
-        internal HashedWheelTimeout _prev;
-
         // The bucket to which the timeout was added
         internal HashedWheelBucket _bucket;
 
 
-        internal HashedWheelTimeout(HashedWheelTimer timer, TimerTask task, long deadline)
+
+        public bool TryReset()
         {
+            this._bucket = null;
+            this._remainingRounds = 0;
+            this._timer = null;
+            Interlocked.Exchange(ref _state, ST_INIT);
+            this._task = null;
+            this._deadline = 0;
+            this.Id = 0;
+            return true;
+        }
+
+        internal HashedWheelTimeout Init(HashedWheelTimer timer, TimerTask task, long deadline)
+        {
+            this.Id = NewId();
             this._timer = timer;
             this._task = task;
             this._deadline = deadline;
+            return this;
         }
 
 
@@ -41,6 +53,12 @@ namespace HWT
         public bool Expired { get { return _state == ST_EXPIRED; } }
 
         public bool Cancelled { get { return _state == ST_CANCELLED; } }
+
+        public long Id { get; private set; }
+
+        private static long idCounter = 1;
+
+        private static long NewId() => Interlocked.Increment(ref idCounter);
 
         bool CompareAndSetState(int expected, int state)
         {
@@ -58,21 +76,8 @@ namespace HWT
             // If a task should be canceled we put this to another queue which will be processed on each tick.
             // So this means that we will have a GC latency of max. 1 tick duration which is good enough. This way
             // we can make again use of our MpscLinkedQueue and so minimize the locking / overhead as much as possible.
-            _timer._cancelledTimeouts.Enqueue(this);
+            this._timer._cancelledTimeouts.Enqueue(this);
             return true;
-        }
-
-        internal void Remove()
-        {
-            HashedWheelBucket bucket = _bucket;
-            if (bucket != null)
-            {
-                bucket.Remove(this);
-            }
-            else
-            {
-                _timer.DescreasePendingTimeouts();
-            }
         }
 
         public void Expire()
@@ -82,7 +87,25 @@ namespace HWT
                 return;
             }
 
-            _task.Run(this);
+            try
+            {
+                _task.Run(this.Id);
+            }
+            finally
+            {
+                this.ReturnToPools();
+            }
+        }
+
+        private static readonly ObjectPool<HashedWheelTimeout> pools = new DefaultObjectPoolProvider() { MaximumRetained = 10000 }.Create<HashedWheelTimeout>();
+        internal static HashedWheelTimeout Rent()
+        {
+            return pools.Get();
+        }
+
+        internal void ReturnToPools()
+        {
+            pools.Return(this);
         }
     }
 }

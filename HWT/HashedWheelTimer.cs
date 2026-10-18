@@ -1,16 +1,18 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 
 
 namespace HWT
 {
+
     /// <summary>
     /// A Timer optimized for approximated I/O timeout scheduling.
     /// 
     /// ## Tick Duration ##
-    /// As described with 'approximated', this timer does not execute the scheduled TimerTask on time. HashedWheelTimer, 
+    /// As described with 'approximated', this timer does not execute the scheduled TimerTask on time. hashedWheelTimer, 
     /// on every tick, will check if there are any TimerTasks behind the schedule and execute them.
     /// You can increase or decrease the accuracy of the execution timing by specifying smaller or larger tick duration 
     /// in the constructor.In most network applications, I/O timeout does not need to be accurate. 
@@ -18,23 +20,23 @@ namespace HWT
     /// 
     /// ## Ticks per Wheel (Wheel Size) ##
     /// 
-    /// HashedWheelTimer maintains a data structure called 'wheel'. 
+    /// hashedWheelTimer maintains a data structure called 'wheel'. 
     /// To put simply, a wheel is a hash table of TimerTasks whose hash function is 'dead line of the task'. 
     /// The default number of ticks per wheel (i.e. the size of the wheel) is 512. 
     /// You could specify a larger value if you are going to schedule a lot of timeouts.
     /// 
     /// ## Do not create many instances. ##
     /// 
-    /// HashedWheelTimer creates a new thread whenever it is instantiated and started. 
+    /// hashedWheelTimer creates a new thread whenever it is instantiated and started. 
     /// Therefore, you should make sure to create only one instance and share it across your application. 
     /// One of the common mistakes, that makes your application unresponsive, is to create a new instance for every connection.
     /// 
     /// ## Implementation Details ##
-    /// HashedWheelTimer is based on George Varghese and Tony Lauck's paper, 
+    /// hashedWheelTimer is based on George Varghese and Tony Lauck's paper, 
     /// 'Hashed and Hierarchical Timing Wheels: data structures to efficiently implement a timer facility'. 
     /// More comprehensive slides are located here http://www.cse.wustl.edu/~cdgill/courses/cs6874/TimingWheels.ppt.
     /// </summary>
-    public class HashedWheelTimer : Timer
+    public partial class HashedWheelTimer : Timer
     {
         public const int WORKER_STATE_INIT = 0;
         public const int WORKER_STATE_STARTED = 1;
@@ -47,7 +49,11 @@ namespace HWT
         private readonly int _mask;
         private readonly ManualResetEvent _startTimeInitialized = new ManualResetEvent(false);
         private readonly ConcurrentQueue<HashedWheelTimeout> _timeouts = new ConcurrentQueue<HashedWheelTimeout>();
+        private readonly Queue<HashedWheelTimeout> _timeouts2 = new Queue<HashedWheelTimeout>();
+        internal readonly Dictionary<long, HashedWheelTimeout> _timeoutMaps = new Dictionary<long, HashedWheelTimeout>();
         internal readonly ConcurrentQueue<HashedWheelTimeout> _cancelledTimeouts = new ConcurrentQueue<HashedWheelTimeout>();
+        internal readonly ConcurrentQueue<(long, Action<long, bool>)> _cancelledIds = new ConcurrentQueue<(long, Action<long, bool>)>();
+        private readonly HashSet<long> CheckCancelledIds = new HashSet<long>();
         private readonly long _maxPendingTimeouts;
         private readonly Thread _workerThread;
 
@@ -55,7 +61,7 @@ namespace HWT
         /// There are 10,000 ticks in a millisecond
         /// </summary>
         private readonly long _base = DateTime.UtcNow.Ticks / 10000;
-        
+
 
         private /*volatile*/ long _startTime;
         private long _pendingTimeouts = 0;
@@ -81,9 +87,9 @@ namespace HWT
         /// <param name="ticksPerWheel">the size of the wheel</param>
         /// <param name="maxPendingTimeouts">The maximum number of pending timeouts after which call to NewTimeout will result in InvalidOperationException being thrown. No maximum pending timeouts limit is assumed if this value is 0 or negative.
         /// </param>
-        public HashedWheelTimer( TimeSpan tickDuration, int ticksPerWheel, long maxPendingTimeouts)
+        public HashedWheelTimer(TimeSpan tickDuration, int ticksPerWheel, long maxPendingTimeouts)
         {
-            
+
             if (tickDuration == null)
             {
                 throw new ArgumentNullException(nameof(tickDuration), "must be greater than 0");
@@ -116,7 +122,7 @@ namespace HWT
         }
 
 
-        private static HashedWheelBucket[] CreateWheel(int ticksPerWheel)
+        private HashedWheelBucket[] CreateWheel(int ticksPerWheel)
         {
             if (ticksPerWheel <= 0)
             {
@@ -131,7 +137,7 @@ namespace HWT
             HashedWheelBucket[] wheel = new HashedWheelBucket[ticksPerWheel];
             for (int i = 0; i < wheel.Length; i++)
             {
-                wheel[i] = new HashedWheelBucket();
+                wheel[i] = new HashedWheelBucket(this);
             }
             return wheel;
         }
@@ -189,7 +195,7 @@ namespace HWT
         /// <param name="task"></param>
         /// <param name="span"></param>
         /// <returns>a handle which is associated with the specified task</returns>
-        public Timeout NewTimeout(TimerTask task, TimeSpan span)
+        public long NewTimeout(TimerTask task, TimeSpan span)
         {
             if (task == null)
             {
@@ -197,7 +203,7 @@ namespace HWT
             }
 
             if (_workerState == WORKER_STATE_SHUTDOWN)
-                return null;
+                return 0;
 
             long pendingTimeoutsCount = Interlocked.Increment(ref _pendingTimeouts);
 
@@ -218,22 +224,35 @@ namespace HWT
             {
                 deadline = long.MaxValue;
             }
-            HashedWheelTimeout timeout = new HashedWheelTimeout(this, task, deadline);
+            HashedWheelTimeout timeout = HashedWheelTimeout.Rent().Init(this, task, deadline);
             _timeouts.Enqueue(timeout);
-            return timeout;
+            return timeout.Id;
+        }
+
+        private void ProcessAddTimeout()
+        {
+            for (; ; )
+            {
+                if (!_timeouts.TryDequeue(out var data))
+                {
+                    break;
+                }
+                this._timeouts2.Enqueue(data);
+                _timeoutMaps.Add(data.Id, data);
+            }
         }
 
         /// <summary>
         /// Releases all resources acquired by this Timer and cancels all tasks which were scheduled but not executed yet.
         /// </summary>
         /// <returns></returns>
-        public ISet<Timeout> Stop()
+        public ISet<long> Stop()
         {
             int originalWorkerState = Interlocked.CompareExchange(ref _workerState, WORKER_STATE_SHUTDOWN, WORKER_STATE_STARTED);
-            
+
             if (originalWorkerState != WORKER_STATE_STARTED)
             {
-                return new HashSet<Timeout>();
+                return new HashSet<long>();
             }
 
             try
@@ -247,7 +266,8 @@ namespace HWT
             {
 
             }
-            return _unprocessedTimeouts;
+            var results = new HashSet<long>(_unprocessedTimeouts.Select(x => x.Id));
+            return results;
         }
 
 
@@ -274,6 +294,8 @@ namespace HWT
                 if (deadline > 0)
                 {
                     int idx = (int)(_tick & _mask);
+                    ProcessAddTimeout();
+                    ProcessCancelledIds();
                     ProcessCancelledTasks();
                     HashedWheelBucket bucket = _wheel[idx];
                     TransferTimeoutsToBuckets();
@@ -289,11 +311,17 @@ namespace HWT
             }
             for (; ; )
             {
-                HashedWheelTimeout timeout;
-                if (!_timeouts.TryDequeue(out timeout) || timeout == null)
+                if (_timeouts2.Count == 0)
                 {
                     break;
                 }
+                var timeout = _timeouts2.Dequeue();
+                var timeoutId = timeout.Id;
+                if (!_timeoutMaps.TryGetValue(timeoutId, out timeout))
+                {
+                    continue;
+                }
+                _timeoutMaps.Remove(timeoutId);
                 if (!timeout.Cancelled)
                 {
                     _unprocessedTimeouts.Add(timeout);
@@ -306,15 +334,27 @@ namespace HWT
         {
             // transfer only max. 100000 timeouts per tick to prevent a thread to stale the workerThread when it just
             // adds new timeouts in a loop.
+            var over = false;
             for (int i = 0; i < 100000; i++)
             {
-                HashedWheelTimeout timeout;
-                if (!_timeouts.TryDequeue(out timeout) || timeout == null)
+                if (_timeouts2.Count == 0)
                 {
                     // all processed
+                    over = true;
                     break;
                 }
-                if (timeout.State == HashedWheelTimeout.ST_CANCELLED)
+                var timeout = _timeouts2.Dequeue();
+
+                var timeoutId = timeout.Id;
+                if (this.CheckCancelledIds.Contains(timeoutId))
+                {
+                    continue;
+                }
+                if (!_timeoutMaps.TryGetValue(timeoutId, out timeout))
+                {
+                    continue;
+                }
+                if (timeout.Cancelled)
                 {
                     // Was cancelled in the meantime.
                     continue;
@@ -329,33 +369,23 @@ namespace HWT
                 HashedWheelBucket bucket = _wheel[stopIndex];
                 bucket.AddTimeout(timeout);
             }
+            if (over)
+            {
+                this.CheckCancelledIds.Clear();
+            }
         }
-
 
 
         private void ProcessCancelledTasks()
         {
             for (; ; )
             {
-                HashedWheelTimeout timeout;
-                if (!_cancelledTimeouts.TryDequeue(out timeout) || timeout == null)
+                if (!_cancelledTimeouts.TryDequeue(out var timeout))
                 {
                     // all processed
                     break;
                 }
-                try
-                {
-                    timeout.Remove();
-                }
-                catch (Exception t)
-                {
-                    /*
-                    if (logger.isWarnEnabled())
-                    {
-                        logger.warn("An exception was thrown while process a cancellation task", t);
-                    }
-                    */
-                }
+                timeout.ReturnToPools();
             }
         }
 
@@ -367,7 +397,7 @@ namespace HWT
             for (; ; )
             {
                 long currentTime = GetCurrentMs() - _startTime;
-                int sleepTimeMs = (int)Math.Truncate(deadline - currentTime + 1M); 
+                int sleepTimeMs = (int)Math.Truncate(deadline - currentTime + 1M);
 
                 if (sleepTimeMs <= 0)
                 {
@@ -392,7 +422,35 @@ namespace HWT
             return awaiter;
         }
 
-        
+        public void TryCancel(long id, Action<long, bool> cancelResultInvoke)
+        {
+            this._cancelledIds.Enqueue((id, cancelResultInvoke));
+        }
+
+        private void ProcessCancelledIds()
+        {
+            for (; ; )
+            {
+                if (!_cancelledIds.TryDequeue(out var data))
+                {
+                    break;
+                }
+                var (id, cancelResultInvoke) = data;
+                this.CancelTimer(id, cancelResultInvoke);
+                this.CheckCancelledIds.Add(id);
+            }
+        }
+
+        private void CancelTimer(long id, Action<long, bool> cancelResultInvoke)
+        {
+            var succ = false;
+            if (this._timeoutMaps.TryGetValue(id, out var timeout))
+            {
+                this._timeoutMaps.Remove(id);
+                succ = timeout.Cancel();
+            }
+            cancelResultInvoke?.Invoke(id, succ);
+        }
 
     }
 }

@@ -7,6 +7,14 @@ namespace HWT
     public interface Timeout
     {
         /// <summary>
+        /// Gets the identifier.
+        /// </summary>
+        /// <value>
+        /// The identifier.
+        /// </value>
+        long Id { get; }
+
+        /// <summary>
         ///  Returns the Timer that created this handle.
         /// </summary>
         Timer Timer { get; }

@@ -12,7 +12,7 @@ namespace HWT
         /// <param name="task"></param>
         /// <param name="span"></param>
         /// <returns> handle which is associated with the specified task</returns>
-        Timeout NewTimeout(TimerTask task, TimeSpan span);
+        long NewTimeout(TimerTask task, TimeSpan span);
 
 
         /// <summary>
@@ -20,6 +20,8 @@ namespace HWT
         /// tasks which were scheduled but not executed yet.
         /// </summary>
         /// <returns>the handles associated with the tasks which were canceled by this method</returns>
-        ISet<Timeout> Stop();
+        ISet<long> Stop();
+
+        void TryCancel(long id, Action<long, bool> cancelResultInvoke);
     }
 }

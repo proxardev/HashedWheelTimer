@@ -1,6 +1,6 @@
 ﻿using System;
-using System.Threading;
 using System.Runtime.CompilerServices;
+using System.Threading;
 
 namespace HWT
 {
@@ -18,7 +18,7 @@ namespace HWT
                 Interlocked.Exchange(ref _continuation, null)?.Invoke();
         }
 
-        public void Run(Timeout timeout)
+        public void Run(long id)
         {
             IsCompleted = true;
             Interlocked.Exchange(ref _continuation, null)?.Invoke();
